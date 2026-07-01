@@ -27,11 +27,12 @@ app.add_middleware(RequestContextMiddleware)
 # MIDDLEWARE 2: CORS Configuration
 # -----------------------------------------------------------------------------
 ASSIGNED_ORIGIN = "https://example.com"
-EXAM_ORIGIN = "https://iitm.ac.in"  # Added the IITM portal origin for verification
+EXAM_ORIGIN_1 = "https://iitm.ac.in"
+EXAM_ORIGIN_2 = "http://iitm.ac.in"
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[ASSIGNED_ORIGIN, EXAM_ORIGIN],  # Strict matches, no wildcards
+    allow_origins=[ASSIGNED_ORIGIN, EXAM_ORIGIN_1, EXAM_ORIGIN_2],
     allow_credentials=True,
     allow_methods=["*"],              
     allow_headers=["*"],              
@@ -46,8 +47,10 @@ MAX_REQUESTS = 14
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        # CRUCIAL FIX: Let browser preflight checks pass without rate limiting
         if request.method == "OPTIONS":
-            return await call_next(request)
+            response = await call_next(request)
+            return response
             
         client_id = request.headers.get("X-Client-Id")
         if client_id:
@@ -58,10 +61,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 timestamps.pop(0)
                 
             if len(timestamps) >= MAX_REQUESTS:
-                return Response(
-                    content="Rate limit exceeded.", 
-                    status_code=429
-                )
+                # Add CORS headers directly onto the error block so browser permits reading 429
+                error_response = Response(content="Rate limit exceeded.", status_code=429)
+                origin = request.headers.get("origin")
+                if origin in [ASSIGNED_ORIGIN, EXAM_ORIGIN_1, EXAM_ORIGIN_2]:
+                    error_response.headers["Access-Control-Allow-Origin"] = origin
+                return error_response
                 
             timestamps.append(now)
             
@@ -76,7 +81,7 @@ app.add_middleware(RateLimitMiddleware)
 async def ping(request: Request):
     request_id = getattr(request.state, "request_id", "unknown")
     return {
-        "email": "24f3002070@ds.study.iitm.ac.in",  # Your verified student email
+        "email": "24f3002070@ds.study.iitm.ac.in",
         "request_id": request_id
     }
 
