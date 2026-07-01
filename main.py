@@ -2,24 +2,22 @@ import time
 import uuid
 from collections import defaultdict
 from fastapi import FastAPI, Request, Response
-from starlette.datastructures import Headers
 
 app = FastAPI()
 
-# 1. State Store for tracking limits
+# Memory tracking for client rate-limiting
 RATE_LIMIT_DATA = defaultdict(list)
 WINDOW_SECONDS = 10
 MAX_REQUESTS = 14  
 
-ASSIGNED_ORIGIN = "https://example.com"
-
+# -----------------------------------------------------------------------------
+# COMBINED LAYERED MIDDLEWARE
+# -----------------------------------------------------------------------------
 @app.middleware("http")
-async def combined_assignment_middleware(request: Request, call_next):
-    # -------------------------------------------------------------------------
-    # 1. HANDLE CORS PREFLIGHT (OPTIONS)
-    # -------------------------------------------------------------------------
+async def combined_middleware_stack(request: Request, call_next):
     origin = request.headers.get("origin")
     
+    # 1. Handle CORS Preflight Options immediately
     if request.method == "OPTIONS":
         response = Response(status_code=200)
         if origin:
@@ -29,18 +27,13 @@ async def combined_assignment_middleware(request: Request, call_next):
         response.headers["Access-Control-Allow-Credentials"] = "true"
         return response
 
-    # -------------------------------------------------------------------------
-    # 2. MIDDLEWARE 1: REQUEST CONTEXT
-    # -------------------------------------------------------------------------
+    # 2. Layer 1: Request Context Processing
     request_id = request.headers.get("X-Request-ID")
     if not request_id:
         request_id = str(uuid.uuid4())
-    
     request.state.request_id = request_id
 
-    # -------------------------------------------------------------------------
-    # 3. MIDDLEWARE 3: RATE LIMITER
-    # -------------------------------------------------------------------------
+    # 3. Layer 3: Client Rate Limiting Filter
     client_id = request.headers.get("X-Client-Id")
     if client_id:
         now = time.time()
@@ -59,15 +52,11 @@ async def combined_assignment_middleware(request: Request, call_next):
             
         timestamps.append(now)
 
-    # -------------------------------------------------------------------------
-    # 4. EXECUTE INNER APP & APPLY RESPONSE CORS HEADERS
-    # -------------------------------------------------------------------------
+    # 4. Layer 2: Execute App Logic and Apply Dynamic Response Headers
     response = await call_next(request)
     
-    # Inject Context Header
+    # Guarantee header propagation on the response payload
     response.headers["X-Request-ID"] = request_id
-    
-    # Inject Final CORS permissions dynamically
     if origin:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
@@ -75,11 +64,15 @@ async def combined_assignment_middleware(request: Request, call_next):
     return response
 
 # -----------------------------------------------------------------------------
-# ENDPOINT: GET /ping
+# ENDPOINT: GET /ping (Using dynamic Response container to guarantee header delivery)
 # -----------------------------------------------------------------------------
 @app.get("/ping")
-async def ping(request: Request):
+async def ping(request: Request, response: Response):
     request_id = getattr(request.state, "request_id", "unknown")
+    
+    # Force add the header directly at the endpoint boundary 
+    response.headers["X-Request-ID"] = request_id
+    
     return {
         "email": "24f3002070@ds.study.iitm.ac.in",
         "request_id": request_id
