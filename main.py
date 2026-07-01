@@ -2,6 +2,7 @@ import time
 import uuid
 from collections import defaultdict
 from fastapi import FastAPI, Request, Response
+from starlette.middleware.base import BaseHTTPMiddleware
 
 app = FastAPI()
 
@@ -11,7 +12,7 @@ WINDOW_SECONDS = 10
 MAX_REQUESTS = 14  
 
 # -----------------------------------------------------------------------------
-# COMBINED LAYERED MIDDLEWARE
+# COMBINED LAYERED NATIVE ASGI MIDDLEWARE
 # -----------------------------------------------------------------------------
 @app.middleware("http")
 async def combined_middleware_stack(request: Request, call_next):
@@ -27,19 +28,19 @@ async def combined_middleware_stack(request: Request, call_next):
         response.headers["Access-Control-Allow-Credentials"] = "true"
         return response
 
-    # 2. Layer 1: Request Context Processing
-    request_id = request.headers.get("X-Request-ID")
+    # 2. Middleware 1: Request Context Processing
+    request_id = request.headers.get("X-Request-ID") or request.headers.get("x-request-id")
     if not request_id:
         request_id = str(uuid.uuid4())
     request.state.request_id = request_id
 
-    # 3. Layer 3: Client Rate Limiting Filter
-    client_id = request.headers.get("X-Client-Id")
+    # 3. Middleware 3: Client Rate Limiting Filter
+    client_id = request.headers.get("X-Client-Id") or request.headers.get("x-client-id")
     if client_id:
         now = time.time()
         timestamps = RATE_LIMIT_DATA[client_id]
         
-        while timestamps and now - timestamps[0] > WINDOW_SECONDS:
+        while timestamps and now - timestamps > WINDOW_SECONDS:
             timestamps.pop(0)
             
         if len(timestamps) >= MAX_REQUESTS:
@@ -52,11 +53,13 @@ async def combined_middleware_stack(request: Request, call_next):
             
         timestamps.append(now)
 
-    # 4. Layer 2: Execute App Logic and Apply Dynamic Response Headers
+    # 4. Middleware 2: Execute App Logic and Apply Dynamic Response Headers
     response = await call_next(request)
     
-    # Guarantee header propagation on the response payload
+    # CRUCIAL FIX: Force lower-case and upper-case mappings to guarantee cross-compatibility
     response.headers["X-Request-ID"] = request_id
+    response.headers["x-request-id"] = request_id
+    
     if origin:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
@@ -72,6 +75,7 @@ async def ping(request: Request, response: Response):
     
     # Force add the header directly at the endpoint boundary 
     response.headers["X-Request-ID"] = request_id
+    response.headers["x-request-id"] = request_id
     
     return {
         "email": "24f3002070@ds.study.iitm.ac.in",
