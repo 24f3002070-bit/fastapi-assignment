@@ -2,7 +2,6 @@ import time
 import uuid
 from collections import defaultdict
 from fastapi import FastAPI, Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
 
 app = FastAPI()
 
@@ -11,30 +10,36 @@ RATE_LIMIT_DATA = defaultdict(list)
 WINDOW_SECONDS = 10
 MAX_REQUESTS = 14  
 
-# -----------------------------------------------------------------------------
-# COMBINED LAYERED NATIVE ASGI MIDDLEWARE
-# -----------------------------------------------------------------------------
+ASSIGNED_ORIGIN = "https://example.com"
+
 @app.middleware("http")
-async def combined_middleware_stack(request: Request, call_next):
-    origin = request.headers.get("origin")
+async def absolute_assignment_middleware(request: Request, call_next):
+    # Detect incoming origin header safely
+    origin = request.headers.get("origin") or request.headers.get("Origin")
     
-    # 1. Handle CORS Preflight Options immediately
+    # -------------------------------------------------------------------------
+    # FAIL-SAFE CORS PREFLIGHT (OPTIONS) HANDLER
+    # -------------------------------------------------------------------------
     if request.method == "OPTIONS":
         response = Response(status_code=200)
-        if origin:
-            response.headers["Access-Control-Allow-Origin"] = origin
+        # Fallback to wildcard '*' or current origin to guarantee preflight bypass
+        response.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "X-Request-ID, X-Client-Id, Content-Type, Authorization"
         response.headers["Access-Control-Allow-Credentials"] = "true"
         return response
 
-    # 2. Middleware 1: Request Context Processing
+    # -------------------------------------------------------------------------
+    # MIDDLEWARE 1: REQUEST CONTEXT PROCESSING
+    # -------------------------------------------------------------------------
     request_id = request.headers.get("X-Request-ID") or request.headers.get("x-request-id")
     if not request_id:
         request_id = str(uuid.uuid4())
     request.state.request_id = request_id
 
-    # 3. Middleware 3: Client Rate Limiting Filter
+    # -------------------------------------------------------------------------
+    # MIDDLEWARE 3: PER-CLIENT RATE LIMITING FILTER
+    # -------------------------------------------------------------------------
     client_id = request.headers.get("X-Client-Id") or request.headers.get("x-client-id")
     if client_id:
         now = time.time()
@@ -45,35 +50,37 @@ async def combined_middleware_stack(request: Request, call_next):
             
         if len(timestamps) >= MAX_REQUESTS:
             response = Response(content="Rate limit exceeded.", status_code=429)
-            if origin:
-                response.headers["Access-Control-Allow-Origin"] = origin
-                response.headers["Access-Control-Allow-Credentials"] = "true"
             response.headers["X-Request-ID"] = request_id
+            response.headers["x-request-id"] = request_id
+            response.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
             return response
             
         timestamps.append(now)
 
-    # 4. Middleware 2: Execute App Logic and Apply Dynamic Response Headers
+    # -------------------------------------------------------------------------
+    # EXECUTE ENDPOINT LOGIC & APPLY ASSIGNED RESPONSE HEADERS
+    # -------------------------------------------------------------------------
     response = await call_next(request)
     
-    # CRUCIAL FIX: Force lower-case and upper-case mappings to guarantee cross-compatibility
+    # Absolute injection rule: Deliver both uppercase and lowercase variants
     response.headers["X-Request-ID"] = request_id
     response.headers["x-request-id"] = request_id
     
-    if origin:
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
+    # Absolute CORS delivery: Guarantee headers attach even if origin is empty string
+    response.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
         
     return response
 
 # -----------------------------------------------------------------------------
-# ENDPOINT: GET /ping (Using dynamic Response container to guarantee header delivery)
+# ENDPOINT: GET /ping 
 # -----------------------------------------------------------------------------
 @app.get("/ping")
 async def ping(request: Request, response: Response):
     request_id = getattr(request.state, "request_id", "unknown")
     
-    # Force add the header directly at the endpoint boundary 
+    # Core system boundary injection
     response.headers["X-Request-ID"] = request_id
     response.headers["x-request-id"] = request_id
     
@@ -81,3 +88,4 @@ async def ping(request: Request, response: Response):
         "email": "24f3002070@ds.study.iitm.ac.in",
         "request_id": request_id
     }
+
